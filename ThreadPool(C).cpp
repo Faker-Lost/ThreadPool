@@ -1,4 +1,4 @@
-#include"ThreadPool.h"
+#include"ThreadPool(C).h"
 #include<thread>
 #include<mutex>
 #include<string.h>
@@ -124,7 +124,7 @@ void addTask(ThreadPool* pool , void(*func)(void*), void* arg)
 	pthread_mutex_lock(&pool->mutexPool);
 	while (!pool->shutdown && pool->queueSize==pool->queueCapacity)
 	{
-		//说明线程池任务队列已满,阻塞生产者 
+		//说明线程池任务队列已满,阻塞生产者线程
 		pthread_cond_wait(&pool->notFull, &pool->mutexPool);
 
 		if (!pool->shutdown)
@@ -133,6 +133,12 @@ void addTask(ThreadPool* pool , void(*func)(void*), void* arg)
 			return;
 		}
 		//添加任务
+		pool->taskQueue[pool->queueRear].function = func;
+		pool->taskQueue[pool->queueRear].arg = arg;
+		pool->queueRear = (pool->queueRear + 1) % pool->queueCapacity;
+		pool->queueSize++;
+
+		pthread_cond_signal(&pool->notEmpty);
 
 	}
 	pthread_mutex_unlock(&pool->mutexPool);
@@ -176,6 +182,8 @@ void* worker(void* arg)
 		pool->queueFront = (pool->queueFront + 1) % pool->queueCapacity;
 		pool->queueSize--;
 		//加锁、解锁
+		//唤醒生产者
+		pthread_cond_signal(&pool->notFull);
 		pthread_mutex_unlock(&pool->mutexPool);
 
 		cout << "thread" << pthread_self() << "is working..." << endl;
@@ -263,3 +271,57 @@ void ThreadExit(ThreadPool* pool)
 	pthread_exit(NULL);
 }
 
+//获取线程池中工作的线程个数
+int threadPoolBusyNum(ThreadPool* pool)
+{
+	pthread_mutex_lock(&pool->mutexBusynum);
+	int busyNum = pool->busyNum;
+	pthread_mutex_unlock(&pool->mutexBusynum);
+	return busyNum;
+}
+
+//获取线程池中活着的线程个数
+int threadPoolLiveNum(ThreadPool* pool)
+{
+	pthread_mutex_lock(&pool->mutexPool);
+	int liveNum = pool->liveNum;
+	pthread_mutex_unlock(&pool->mutexPool);
+	return liveNum;
+}
+
+int destoryThread(ThreadPool* pool)
+{
+	//判断是否有效
+	if (pool == NULL)
+	{
+		return -1;
+	}
+
+	//关闭线程池
+	pool->shutdown = 1;
+	//阻塞回收
+	pthread_join(pool->managerID, NULL);
+	//唤醒阻塞的消费者
+	for (int i = 0; i < pool->liveNum; i++)
+	{
+		pthread_cond_signal(&pool->notEmpty);
+	}
+	//释放堆内存
+	if (pool->taskQueue)
+	{
+		free(pool->taskQueue);
+	}
+	if (pool->threadsID)
+	{
+		free(pool->threadsID);
+	}
+	//销毁互斥锁
+	pthread_mutex_destroy(&pool->mutexPool);
+	pthread_mutex_destroy(&pool->mutexBusynum);
+	pthread_cond_destroy(&pool->notEmpty);
+	pthread_cond_destroy(&pool->notFull);
+	//销毁线程
+	free(pool);
+	pool = NULL;
+	return 0;
+}
